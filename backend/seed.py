@@ -1,4 +1,3 @@
-import argparse
 import random
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -68,23 +67,6 @@ def build_random_diagnostic_categories() -> list[DiagnosticCategory]:
     return random.sample(DIAGNOSTIC_CATEGORIES, k=tag_count)
 
 
-def backfill_user_departments(session: Session) -> int:
-    users_to_fill = session.exec(
-        select(User).where(
-            (User.department == None)  # noqa: E711
-            | (User.department == "")
-            | (User.department == "Unknown")
-        )
-    ).all()
-
-    for user in users_to_fill:
-        user.department = sample_department()
-        session.add(user)
-
-    session.commit()
-    return len(users_to_fill)
-
-
 def validate_user_departments(session: Session) -> None:
     department_rows = session.exec(select(User.department)).all()
     allowed_departments = set(DEPARTMENT_NAMES)
@@ -128,6 +110,16 @@ def validate_seed_data(session: Session) -> None:
         .where(Twin.visibility == "team")
         .where(Interaction.user_id != Twin.owner_id)
     ).one()
+    interaction_before_user_registration = session.exec(
+        select(func.count(Interaction.id))
+        .join(User, User.id == Interaction.user_id)
+        .where(Interaction.created_at < User.created_at)
+    ).one()
+    interaction_before_twin_creation = session.exec(
+        select(func.count(Interaction.id))
+        .join(Twin, Twin.id == Interaction.twin_id)
+        .where(Interaction.created_at < Twin.created_at)
+    ).one()
 
     thumb_down_interactions = session.exec(
         select(func.count(Interaction.id)).where(Interaction.is_helpful.is_(False))
@@ -152,6 +144,10 @@ def validate_seed_data(session: Session) -> None:
         raise RuntimeError("Seed validation failed: private twins contain colleague interactions.")
     if team_colleague_calls <= 0:
         raise RuntimeError("Seed validation failed: team twins contain no colleague interactions.")
+    if interaction_before_user_registration != 0:
+        raise RuntimeError("Seed validation failed: interactions exist before user registration.")
+    if interaction_before_twin_creation != 0:
+        raise RuntimeError("Seed validation failed: interactions exist before twin creation.")
     if thumb_down_interactions != diagnostics_count:
         raise RuntimeError(
             "Seed validation failed: thumb-down interaction count does not match diagnostic count."
@@ -271,6 +267,7 @@ def generate_mock_data() -> None:
             session.refresh(twin)
 
         user_by_id = {user.id: user for user in users}
+        user_created_at_by_id = {user.id: ensure_aware_utc(user.created_at) for user in users}
 
         print("Seeding interactions with time-progressive team adoption...")
 
@@ -278,8 +275,16 @@ def generate_mock_data() -> None:
 
         for _ in range(NUM_INTERACTIONS):
             selected_twin = random.choices(twins, weights=twin_weights, k=1)[0]
-            interaction_created_at = fake.date_time_between(start_date=start_date, end_date=now, tzinfo=timezone.utc)
+            selected_twin_created_at = ensure_aware_utc(selected_twin.created_at)
+            interaction_window_start = max(start_date, selected_twin_created_at)
+            interaction_created_at = fake.date_time_between(
+                start_date=interaction_window_start,
+                end_date=now,
+                tzinfo=timezone.utc,
+            )
             interaction_created_at = ensure_aware_utc(interaction_created_at)
+            if interaction_created_at < selected_twin_created_at:
+                interaction_created_at = selected_twin_created_at
 
             owner_user = user_by_id[selected_twin.owner_id]
 
@@ -290,12 +295,20 @@ def generate_mock_data() -> None:
                 progress = clamp(progress, 0.0, 1.0)
 
                 p_colleague = TEAM_BASE_COLLEAGUE_RATIO + progress * (TEAM_TARGET_COLLEAGUE_RATIO - TEAM_BASE_COLLEAGUE_RATIO)
-                colleague_pool = [u for u in users if u.id != selected_twin.owner_id]
+                colleague_pool = [
+                    u
+                    for u in users
+                    if u.id != selected_twin.owner_id and user_created_at_by_id[u.id] <= interaction_created_at
+                ]
 
                 if colleague_pool and random.random() < p_colleague:
                     interacting_user = random.choice(colleague_pool)
                 else:
                     interacting_user = owner_user
+
+            interacting_user_created_at = user_created_at_by_id[interacting_user.id]
+            if interaction_created_at < interacting_user_created_at:
+                interaction_created_at = interacting_user_created_at
 
             prompt_len = random.randint(10, 300)
             response_len = random.randint(50, 1500)
@@ -341,27 +354,5 @@ def generate_mock_data() -> None:
         print_weekly_team_colleague_ratio(session, start_date, now)
 
 
-def backfill_department_only() -> None:
-    print("Initializing database tables (compatibility + department backfill)...")
-    create_db_and_tables()
-
-    with Session(engine) as session:
-        updated_users = backfill_user_departments(session)
-        validate_user_departments(session)
-        print(f"Department backfill completed successfully. Updated users: {updated_users}")
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed or backfill AI Twin demo data.")
-    parser.add_argument(
-        "--mode",
-        choices=["full", "backfill_department_only"],
-        default="full",
-        help="full: reset and reseed all data; backfill_department_only: keep existing data and fill missing departments.",
-    )
-    args = parser.parse_args()
-
-    if args.mode == "backfill_department_only":
-        backfill_department_only()
-    else:
-        generate_mock_data()
+    generate_mock_data()

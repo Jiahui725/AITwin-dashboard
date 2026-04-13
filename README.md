@@ -9,7 +9,7 @@ This project connects user behavior with business outcomes, helping teams quanti
 ### Core Stack
 * **Backend:** Python 3.10+, FastAPI (Modern web framework), SQLModel (Pydantic + SQLAlchemy ORM)
 * **Frontend:** React 19, TypeScript, Vite 8, Tailwind CSS 4, Recharts
-* **Tooling & DX:** `uv` 
+* **Tooling & DX:** `uv`
 
 ### Runtime Prerequisites
 * **Node.js:** `>=20.19.0` (Required by Vite 8)
@@ -26,7 +26,7 @@ Open a terminal to initialize the database and start the API:
 cd backend
 
 # Full reseed: Resets ai_twin.db, recreates tables, and seeds 30 days of mock data
-uv run seed.py --mode full
+uv run seed.py
 
 # Start the FastAPI server
 uv run uvicorn app.main:app --reload
@@ -63,10 +63,11 @@ The dashboard is structured into four core modules, each designed to drive speci
 * **Actionable Insight:** Tracks AI unit economics against traditional IT/HR ticket handling costs to show ROI. Pareto analysis identifies top consumers for targeted API rate-limiting to prevent budget overruns.
 
 ### D. Quality & Diagnostics
-* **Focus:** Overall Thumbs-Down rate trends and defect breakdown by category.
+* **Focus:** Feedback-only quality mix (`Helpful vs Thumb-down`) and defect breakdown by category.
 * **Actionable Insight:** 
     1.  **Circuit Breaker:** Serves as a threshold for deployment rollbacks if negative feedback spikes.
-    2.  **Precision RAG Updates:** If a department (e.g., Finance) shows high `OutdatedInfo` tags, the team can bypass model tweaks and directly trigger a targeted RAG vector database update.
+    2.  **Quality Readability:** Pair `Helpful vs Thumb-down (feedback-only)` with `Feedback Coverage` so teams can distinguish quality movement from feedback sparsity.
+    3.  **Precision RAG Updates:** If a department (e.g., Finance) shows high `OutdatedInfo` tags, the team can bypass model tweaks and directly trigger a targeted RAG vector database update.
 
 ---
 
@@ -135,10 +136,15 @@ The `seed.py` utility generates demo data with realistic business patterns:
 ### 4.4. KPI Formula Contracts
 | Metric | Formula | Zero-denominator Behavior |
 |---|---|---|
+| `Active Rate` | `Active Users / Total Registered Users * 100` | `null` if `Total Registered Users = 0` |
 | `Twin Creation Rate` | `Users with Twin / Registered Users * 100` | `null` if `Registered Users = 0` |
+| `New User Activation Rate (7d)` | `Activated New Users Within 7 Days / New Registered Users * 100` | `null` if `New Registered Users = 0` |
 | `Public Twin Rate` | `Public Twins / Created Twins * 100` | `null` if `Created Twins = 0` |
 | `Avg Cost / Helpful Colleague Solution` | `Colleague Total Cost / Colleague Helpful Solutions` | `null` if denominator is `0` |
-| `Thumb Down Rate` | `Total Thumb Down / Total Interactions * 100` | `0.0` if `Total Interactions = 0` |
+| `Helpful Rate (feedback-only)` | `Helpful / (Helpful + Thumb Down) * 100` | `null` if `(Helpful + Thumb Down) = 0` |
+| `Thumb-down Rate (feedback-only)` | `Thumb Down / (Helpful + Thumb Down) * 100` | `null` if `(Helpful + Thumb Down) = 0` |
+| `Feedback Coverage` | `(Helpful + Thumb Down) / Total Interactions * 100` | `0.0` if `Total Interactions = 0` |
+| `Estimated Spend (USD)` | `Token Proxy Pricing(Input + Output)` | `0.0` when total tokens are `0` |
 
 ---
 
@@ -161,6 +167,8 @@ The `seed.py` utility generates demo data with realistic business patterns:
 | `/api/interactions/thumb-down/recent` | `GET` | Recent negative cases for quick triage |
 | `/api/interactions/{interaction_id}/diagnostic` | `GET` | Diagnostic tags for a specific case |
 | `/api/interactions/{interaction_id}/diagnostic` | `POST` | Manual diagnostic correction or backfill |
+
+`/api/metrics/kpi` also includes overview card fields such as `active_users`, `active_rate_pct`, `new_user_activation_rate_7d_pct`, `colleague_usage_share_pct`, `helpful_rate_pct`, `thumb_down_rate_pct_feedback`, `feedback_coverage_pct`, and `estimated_spend_usd`.
 
 ---
 

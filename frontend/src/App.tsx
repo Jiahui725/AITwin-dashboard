@@ -53,21 +53,21 @@ function parseViewFromUrl(): DashboardView {
   return view === 'growth' || view === 'usage' || view === 'cost' || view === 'quality' ? view : 'overview';
 }
 
-function formatNumericDelta(delta: number | null): string {
-  if (delta === null) return 'vs previous period N/A';
-  const direction = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
-  return `vs previous period ${direction} ${Math.abs(delta).toFixed(1)}%`;
-}
-
-function formatRatioDelta(delta: number | null): string {
-  if (delta === null) return 'vs previous period N/A';
-  const direction = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
-  return `vs previous period ${direction} ${Math.abs(delta).toFixed(1)}pp`;
-}
-
 function formatCurrency(value: number | null, currency = 'USD'): string {
   if (value === null) return 'N/A';
   return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(value);
+}
+
+function formatPercent(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined) return 'N/A';
+  return `${value.toFixed(digits)}%`;
+}
+
+function formatDeltaCompact(delta: number | null | undefined, unit: '%' | 'pp'): string {
+  if (delta === null || delta === undefined) return 'N/A';
+  if (delta === 0) return `0.0${unit}`;
+  const arrow = delta > 0 ? '↑' : '↓';
+  return `${arrow}${Math.abs(delta).toFixed(1)}${unit}`;
 }
 
 function formatBucketLabel(value: string): string {
@@ -250,16 +250,39 @@ export default function App() {
     ? cacheRef.current.qualityDepartmentRisk.get(`${preset}:${qualitySelectedDepartment}`) ?? qualityRiskDefault
     : qualityRiskDefault;
 
-  const latestShare = useMemo(() => {
-    if (!selfColleague?.series?.length) return { self: 0, colleague: 0 };
-    const points = selfColleague.series;
-    const latest = points[points.length - 1];
-    return { self: latest.self_share_pct ?? 0, colleague: latest.colleague_share_pct ?? 0 };
-  }, [selfColleague]);
+  const periodUsage = useMemo(() => {
+    const totalInteractions = Number(kpi?.total_interactions ?? 0);
+    const colleagueInteractions = Number(kpi?.colleague_interactions ?? 0);
+    const safeColleagueInteractions = Math.max(0, Math.min(colleagueInteractions, totalInteractions));
+    const selfInteractions = Math.max(0, totalInteractions - safeColleagueInteractions);
+
+    if (totalInteractions <= 0) {
+      return {
+        totalInteractions: 0,
+        colleagueInteractions: 0,
+        selfInteractions: 0,
+        colleagueSharePct: 0,
+        selfSharePct: 0,
+      };
+    }
+
+    const colleagueSharePct = Number(((safeColleagueInteractions / totalInteractions) * 100).toFixed(1));
+    const selfSharePct = Number((100 - colleagueSharePct).toFixed(1));
+
+    return {
+      totalInteractions,
+      colleagueInteractions: safeColleagueInteractions,
+      selfInteractions,
+      colleagueSharePct,
+      selfSharePct,
+    };
+  }, [kpi]);
 
   const sourceSummary = useMemo(() => {
     const total = sources.reduce((sum: number, s: any) => sum + s.count, 0);
-    return sources.map((s: any) => ({ ...s, share: total > 0 ? (s.count / total) * 100 : 0 }));
+    return sources
+      .map((s: any) => ({ ...s, share: total > 0 ? (s.count / total) * 100 : 0 }))
+      .sort((a: any, b: any) => b.share - a.share);
   }, [sources]);
 
   const top20Share = useMemo(() => {
@@ -359,49 +382,168 @@ export default function App() {
 
             {view === 'overview' && kpi && growth && selfColleague && pareto && efficiency && qualityOverview && (
               <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                  <div className="bg-white p-4 rounded-xl border border-slate-100"><p className="text-xs text-slate-500">Total Queries</p><p className="text-2xl font-bold mt-1">{kpi.total_interactions.toLocaleString()}</p><p className="text-xs text-slate-500 mt-1">{formatNumericDelta(kpi.delta.total_interactions.delta_pct)}</p></div>
-                  <div className="bg-white p-4 rounded-xl border border-slate-100"><p className="text-xs text-slate-500">Active Twins</p><p className="text-2xl font-bold mt-1">{kpi.active_twins}</p><p className="text-xs text-slate-500 mt-1">{formatNumericDelta(kpi.delta.active_twins.delta_pct)}</p></div>
-                  <div className="bg-white p-4 rounded-xl border border-slate-100"><p className="text-xs text-slate-500">Avg Latency</p><p className="text-2xl font-bold mt-1">{kpi.avg_latency_ms} ms</p><p className="text-xs text-slate-500 mt-1">{formatNumericDelta(kpi.delta.avg_latency_ms.delta_pct)}</p></div>
-                  <div className="bg-white p-4 rounded-xl border border-slate-100"><p className="text-xs text-slate-500">Tokens</p><p className="text-2xl font-bold mt-1">{(kpi.total_tokens / 1000).toFixed(1)}k</p><p className="text-xs text-slate-500 mt-1">{formatNumericDelta(kpi.delta.total_tokens.delta_pct)}</p></div>
-                  <div className="bg-white p-4 rounded-xl border border-slate-100"><p className="text-xs text-slate-500">Public Twins %</p><p className="text-2xl font-bold mt-1">{kpi.public_twin_ratio_pct.toFixed(1)}%</p><p className="text-xs text-slate-500 mt-1">{formatRatioDelta(kpi.delta.public_twin_ratio_pct.delta_pp)}</p></div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3">
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 lg:col-span-2">
+                    <p className="text-xs text-slate-500">Active Users</p>
+                    <p className="text-2xl font-bold mt-1">{kpi.active_users.toLocaleString()}</p>
+                    <p className="text-xs text-slate-500 mt-1">Rate {formatPercent(kpi.active_rate_pct)} of {kpi.total_registered_users}</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(kpi.delta.active_rate_pct.delta_pp, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 lg:col-span-2">
+                    <p className="text-xs text-slate-500">New User Activation Rate (7d)</p>
+                    <p className="text-2xl font-bold mt-1">{formatPercent(kpi.new_user_activation_rate_7d_pct)}</p>
+                    <p className="text-xs text-slate-500 mt-1">{kpi.activated_new_users_7d} / {kpi.new_registered_users} activated</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(kpi.delta.new_user_activation_rate_7d_pct.delta_pp, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 lg:col-span-2">
+                    <p className="text-xs text-slate-500">Colleague Usage Share</p>
+                    <p className="text-2xl font-bold mt-1">{formatPercent(kpi.colleague_usage_share_pct)}</p>
+                    <p className="text-xs text-slate-500 mt-1">{kpi.colleague_interactions} of {kpi.total_interactions} interactions</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(kpi.delta.colleague_usage_share_pct.delta_pp, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 lg:col-span-3">
+                    <p className="text-xs text-slate-500">Quality</p>
+                    <p className="text-sm mt-2 font-semibold">
+                      Helpful {formatPercent(kpi.helpful_rate_pct)} · Down {formatPercent(kpi.thumb_down_rate_pct_feedback)}
+                    </p>
+                    <div className="mt-2 h-2 bg-slate-100 rounded overflow-hidden flex">
+                      <div
+                        className="h-full bg-emerald-500"
+                        style={{ width: `${Math.max(0, Math.min(Number(kpi.helpful_rate_pct ?? 0), 100))}%` }}
+                      />
+                      <div
+                        className="h-full bg-rose-500"
+                        style={{ width: `${Math.max(0, Math.min(Number(kpi.thumb_down_rate_pct_feedback ?? 0), 100))}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">Helpful vs Down (feedback-only)</p>
+                    <p className="text-xs text-slate-500 mt-1">Coverage {formatPercent(kpi.feedback_coverage_pct)} · {kpi.feedback_count} feedback</p>
+                    <p className="text-xs text-slate-500 mt-1">Down Δ {formatDeltaCompact(kpi.delta.thumb_down_rate_pct_feedback.delta_pp, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 lg:col-span-3">
+                    <p className="text-xs text-slate-500">Estimated Spend (USD)</p>
+                    <p className="text-2xl font-bold mt-1">{formatCurrency(kpi.estimated_spend_usd, 'USD')}</p>
+                    <p className="text-xs text-slate-500 mt-1">Tokens {kpi.total_tokens.toLocaleString()}</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(kpi.delta.estimated_spend_usd.delta_pct, '%')}</p>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                  <div className="bg-white p-5 rounded-xl border border-slate-100">
-                    <div className="flex items-center justify-between"><h3 className="font-semibold">Growth Snapshot</h3><button className="text-xs text-blue-600" onClick={() => setView('growth')}>Open</button></div>
-                    <p className="text-sm mt-3">Creation Rate: <span className="font-semibold">{growth.summary.twin_creation_rate.current?.toFixed(1) ?? '0.0'}%</span></p>
-                    <p className="text-sm">Public Twin Rate: <span className="font-semibold">{growth.summary.public_twin_rate.current?.toFixed(1) ?? '0.0'}%</span></p>
-                    <div className="h-24 mt-3"><ResponsiveContainer width="100%" height="100%"><LineChart data={growth.series}><Line dataKey="registered_users_cum" stroke="#1d4ed8" dot={false} /><Line dataKey="created_twins_cum" stroke="#059669" dot={false} /><Line dataKey="public_twins_cum" stroke="#f59e0b" dot={false} /></LineChart></ResponsiveContainer></div>
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  <div className="bg-white p-6 rounded-xl border border-slate-100 min-h-[280px] flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">Growth Snapshot</h3>
+                      <button className="text-xs font-medium text-slate-500 hover:text-slate-800" onClick={() => setView('growth')}>Open</button>
+                    </div>
+                    <p className="text-sm text-slate-500 mt-4">Twin Creation Rate (Period)</p>
+                    <p className="text-3xl font-bold mt-1">{formatPercent(growth.summary.twin_creation_rate.current)}</p>
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-slate-600">
+                      <div className="rounded-lg bg-slate-50 px-3 py-2">
+                        <p className="text-slate-500">New User Activation (7d)</p>
+                        <p className="font-semibold text-slate-800">{formatPercent(growth.summary.new_user_activation_rate_7d.current)}</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 px-3 py-2">
+                        <p className="text-slate-500">Public Twin Rate (Period)</p>
+                        <p className="font-semibold text-slate-800">{formatPercent(growth.summary.public_twin_rate.current)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-auto pt-4">
+                      <div className="h-24">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={growth.series}>
+                            <Line dataKey="registered_users_cum" stroke="#1d4ed8" dot={false} />
+                            <Line dataKey="created_twins_cum" stroke="#059669" dot={false} />
+                            <Line dataKey="public_twins_cum" stroke="#f59e0b" dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">R: Registered · C: Created · P: Public</p>
+                    </div>
                   </div>
 
-                  <div className="bg-white p-5 rounded-xl border border-slate-100">
-                    <div className="flex items-center justify-between"><h3 className="font-semibold">Usage Snapshot</h3><button className="text-xs text-blue-600" onClick={() => setView('usage')}>Open</button></div>
-                    <p className="text-sm mt-3">Self {latestShare.self.toFixed(1)}% / Colleague {latestShare.colleague.toFixed(1)}%</p>
-                    <div className="mt-3 space-y-2">
+                  <div className="bg-white p-6 rounded-xl border border-slate-100 min-h-[280px] flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">Usage Snapshot</h3>
+                      <button className="text-xs font-medium text-slate-500 hover:text-slate-800" onClick={() => setView('usage')}>Open</button>
+                    </div>
+                    <p className="text-sm text-slate-500 mt-4">Colleague Usage Share</p>
+                    <p className="text-3xl font-bold mt-1">{formatPercent(periodUsage.colleagueSharePct)}</p>
+                    <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
+                      <span>Total Interactions (Period)</span>
+                      <span className="font-semibold text-slate-900">{periodUsage.totalInteractions.toLocaleString()}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                      <span>Self Share (Period)</span>
+                      <span>{formatPercent(periodUsage.selfSharePct)}</span>
+                    </div>
+                    <div className="mt-auto pt-4 space-y-2">
                       {sourceSummary.map((item: any) => (
                         <div key={item.source}>
-                          <div className="flex justify-between text-xs text-slate-500"><span>{item.source}</span><span>{item.share.toFixed(1)}%</span></div>
-                          <div className="h-2 bg-slate-100 rounded overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${item.share}%` }} /></div>
+                          <div className="flex justify-between text-xs text-slate-500">
+                            <span>{item.source}</span>
+                            <span>{item.share.toFixed(1)}%</span>
+                          </div>
+                          <div className="h-2 bg-slate-100 rounded overflow-hidden">
+                            <div className="h-full bg-blue-500" style={{ width: `${item.share}%` }} />
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className="bg-white p-5 rounded-xl border border-slate-100">
-                    <div className="flex items-center justify-between"><h3 className="font-semibold">Cost Snapshot</h3><button className="text-xs text-blue-600" onClick={() => setView('cost')}>Open</button></div>
-                    <p className="text-sm mt-3">Avg Cost / Colleague Solution</p>
-                    <p className="text-xl font-semibold">{formatCurrency(efficiency.avg_cost_per_colleague_solution, efficiency.currency)}</p>
-                    <p className="text-sm mt-2">Top-20% Cost Share: <span className="font-semibold">{top20Share.toFixed(1)}%</span></p>
-                    <div className="h-2 bg-slate-100 rounded mt-2 overflow-hidden"><div className="h-full bg-rose-500" style={{ width: `${Math.min(top20Share, 100)}%` }} /></div>
+                  <div className="bg-white p-6 rounded-xl border border-slate-100 min-h-[280px] flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">Cost Snapshot</h3>
+                      <button className="text-xs font-medium text-slate-500 hover:text-slate-800" onClick={() => setView('cost')}>Open</button>
+                    </div>
+                    <p className="text-sm text-slate-500 mt-4">Avg Cost / Colleague Solution</p>
+                    <p className="text-3xl font-bold mt-1">{formatCurrency(efficiency.avg_cost_per_colleague_solution, efficiency.currency)}</p>
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-slate-600">
+                      <div className="rounded-lg bg-slate-50 px-3 py-2">
+                        <p className="text-slate-500">Estimated Spend (Period)</p>
+                        <p className="font-semibold text-slate-800">{formatCurrency(kpi.estimated_spend_usd, 'USD')}</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 px-3 py-2">
+                        <p className="text-slate-500">Top-20% Cost Share</p>
+                        <p className="font-semibold text-slate-800">{top20Share.toFixed(1)}%</p>
+                      </div>
+                    </div>
+                    <div className="mt-auto pt-4">
+                      <div className="flex justify-between text-xs text-slate-500 mb-1">
+                        <span>Cost concentration</span>
+                        <span>{top20Share.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded overflow-hidden">
+                        <div className="h-full bg-rose-500" style={{ width: `${Math.min(top20Share, 100)}%` }} />
+                      </div>
+                    </div>
                   </div>
-                  <div className="bg-white p-5 rounded-xl border border-slate-100">
-                    <div className="flex items-center justify-between"><h3 className="font-semibold">Quality Snapshot</h3><button className="text-xs text-blue-600" onClick={() => setView('quality')}>Open</button></div>
-                    <p className="text-sm mt-3">Thumb-down Rate</p>
-                    <p className="text-xl font-semibold">{(qualityOverview.summary.current_thumb_down_rate_pct ?? 0).toFixed(1)}%</p>
-                    <p className="text-xs text-slate-500 mt-1">{formatRatioDelta(qualityOverview.summary.thumb_down_rate_delta_pp ?? null)}</p>
-                    <p className="text-sm mt-3">Top Defect</p>
-                    <p className="text-sm font-semibold">{topQualityDefect ? `${topQualityDefect.category} (${topQualityDefect.count})` : 'No tagged defects'}</p>
+
+                  <div className="bg-white p-6 rounded-xl border border-slate-100 min-h-[280px] flex flex-col">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">Quality Snapshot</h3>
+                      <button className="text-xs font-medium text-slate-500 hover:text-slate-800" onClick={() => setView('quality')}>Open</button>
+                    </div>
+                    <p className="text-sm text-slate-500 mt-4">Thumb-down vs Helpful (feedback-only)</p>
+                    <div className="mt-2 flex items-end gap-6">
+                      <div>
+                        <p className="text-xs text-slate-500">Down</p>
+                        <p className="text-2xl font-bold text-rose-600">{formatPercent(kpi.thumb_down_rate_pct_feedback)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">Helpful</p>
+                        <p className="text-2xl font-bold text-emerald-600">{formatPercent(kpi.helpful_rate_pct)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex items-center justify-between text-sm text-slate-600">
+                      <span>Feedback Coverage</span>
+                      <span className="font-semibold text-slate-900">{formatPercent(kpi.feedback_coverage_pct)}</span>
+                    </div>
+                    <div className="mt-auto pt-4 rounded-lg bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-slate-500">Top Defect</p>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {topQualityDefect ? `${formatDiagnosticCategory(topQualityDefect.category)} (${topQualityDefect.count})` : 'No tagged defects'}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -409,9 +551,25 @@ export default function App() {
 
             {view === 'growth' && growth && (
               <section className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-white p-6 rounded-xl border border-slate-100"><p className="text-sm text-slate-500">Twin Creation Rate</p><h3 className="text-3xl font-bold mt-1">{growth.summary.twin_creation_rate.current?.toFixed(1) ?? '0.0'}%</h3><p className="text-xs text-slate-500 mt-2">{formatRatioDelta(growth.summary.twin_creation_rate.delta_pp ?? null)}</p></div>
-                  <div className="bg-white p-6 rounded-xl border border-slate-100"><p className="text-sm text-slate-500">Public Twin Rate</p><h3 className="text-3xl font-bold mt-1">{growth.summary.public_twin_rate.current?.toFixed(1) ?? '0.0'}%</h3><p className="text-xs text-slate-500 mt-2">{formatRatioDelta(growth.summary.public_twin_rate.delta_pp ?? null)}</p></div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white p-6 rounded-xl border border-slate-100">
+                    <p className="text-sm text-slate-500">Twin Creation Rate (Period)</p>
+                    <h3 className="text-3xl font-bold mt-1">{formatPercent(growth.summary.twin_creation_rate.current)}</h3>
+                    <p className="text-xs text-slate-500 mt-2">{growth.summary.users_with_twin.current ?? 0} / {growth.summary.registered_users.current ?? 0}</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(growth.summary.twin_creation_rate.delta_pp ?? null, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-6 rounded-xl border border-slate-100">
+                    <p className="text-sm text-slate-500">New User Activation Rate (7d)</p>
+                    <h3 className="text-3xl font-bold mt-1">{formatPercent(growth.summary.new_user_activation_rate_7d.current)}</h3>
+                    <p className="text-xs text-slate-500 mt-2">{growth.summary.activated_new_users_7d.current ?? 0} / {growth.summary.new_registered_users.current ?? 0}</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(growth.summary.new_user_activation_rate_7d.delta_pp ?? null, 'pp')}</p>
+                  </div>
+                  <div className="bg-white p-6 rounded-xl border border-slate-100">
+                    <p className="text-sm text-slate-500">Public Twin Rate (Period)</p>
+                    <h3 className="text-3xl font-bold mt-1">{formatPercent(growth.summary.public_twin_rate.current)}</h3>
+                    <p className="text-xs text-slate-500 mt-2">{growth.summary.public_twins.current ?? 0} / {growth.summary.created_twins.current ?? 0}</p>
+                    <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(growth.summary.public_twin_rate.delta_pp ?? null, 'pp')}</p>
+                  </div>
                 </div>
                 <div className="bg-white p-6 rounded-xl border border-slate-100"><h3 className="text-lg font-semibold mb-6">Cumulative Growth (Weekly)</h3><div className="h-96"><ResponsiveContainer width="100%" height="100%"><LineChart data={growth.series}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="bucket_start" tickFormatter={formatBucketLabel} /><YAxis /><RechartsTooltip /><Legend /><Line dataKey="registered_users_cum" stroke="#1d4ed8" dot={false} /><Line dataKey="created_twins_cum" stroke="#059669" dot={false} /><Line dataKey="public_twins_cum" stroke="#f59e0b" dot={false} /></LineChart></ResponsiveContainer></div></div>
               </section>

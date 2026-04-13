@@ -227,6 +227,12 @@ def _delta_pp(current: Optional[float], previous: Optional[float]) -> Optional[f
     return round(current - previous, 1)
 
 
+def _round_optional(value: Optional[float], digits: int = 1) -> Optional[float]:
+    if value is None:
+        return None
+    return round(value, digits)
+
+
 def _interaction_metrics(session: Session, start_at: datetime, end_at: datetime) -> Dict[str, float]:
     filters = (Interaction.created_at >= start_at, Interaction.created_at < end_at)
 
@@ -244,6 +250,8 @@ def _interaction_metrics(session: Session, start_at: datetime, end_at: datetime)
         "total_interactions": float(total_interactions),
         "active_twins": float(active_twins),
         "avg_latency_ms": float(round(avg_latency, 2)) if avg_latency else 0.0,
+        "total_prompt_tokens": float(total_prompt),
+        "total_response_tokens": float(total_response),
         "total_tokens": float(total_tokens),
     }
 
@@ -269,14 +277,116 @@ def _twin_metrics(session: Session, start_at: datetime, end_at: datetime) -> Dic
     }
 
 
-def compute_kpis(session: Session, start_at: datetime, end_at: datetime) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
+def _overview_business_metrics(session: Session, start_at: datetime, end_at: datetime) -> Dict[str, Any]:
+    interaction_rows = session.exec(
+        select(
+            Interaction.user_id,
+            Twin.owner_id,
+            Interaction.is_helpful,
+            Interaction.prompt_length,
+            Interaction.response_length,
+            Interaction.created_at,
+            User.created_at,
+        )
+        .join(Twin, Twin.id == Interaction.twin_id)
+        .join(User, User.id == Interaction.user_id)
+        .where(Interaction.created_at >= start_at, Interaction.created_at < end_at)
+    ).all()
+
+    total_interactions = len(interaction_rows)
+    active_user_ids = set()
+    colleague_interactions = 0
+    helpful_count = 0
+    thumb_down_count = 0
+    total_prompt_tokens = 0
+    total_response_tokens = 0
+
+    for user_id, owner_id, is_helpful, prompt_length, response_length, interaction_created_at, user_created_at in interaction_rows:
+        interaction_created_at_utc = _ensure_aware_utc(interaction_created_at)
+        user_created_at_utc = _ensure_aware_utc(user_created_at)
+        if user_created_at_utc <= interaction_created_at_utc:
+            active_user_ids.add(user_id)
+        if user_id != owner_id:
+            colleague_interactions += 1
+        if is_helpful is True:
+            helpful_count += 1
+        elif is_helpful is False:
+            thumb_down_count += 1
+        total_prompt_tokens += int(prompt_length)
+        total_response_tokens += int(response_length)
+
+    total_registered_users = session.exec(
+        select(func.count(User.id)).where(User.created_at < end_at)
+    ).one()
+
+    new_user_rows = session.exec(
+        select(User.id, User.created_at).where(User.created_at >= start_at, User.created_at < end_at)
+    ).all()
+    new_registered_users = len(new_user_rows)
+
+    activated_new_users_7d = 0
+    if new_user_rows:
+        new_user_created_at = {
+            str(user_id): _ensure_aware_utc(created_at) for user_id, created_at in new_user_rows
+        }
+        new_user_ids = list(new_user_created_at.keys())
+        twin_rows = session.exec(
+            select(Twin.owner_id, Twin.created_at)
+            .where(Twin.owner_id.in_(new_user_ids))
+            .where(Twin.created_at < end_at)
+        ).all()
+
+        earliest_twin_by_owner: Dict[str, datetime] = {}
+        for owner_id, created_at in twin_rows:
+            owner_key = str(owner_id)
+            created_at_utc = _ensure_aware_utc(created_at)
+            if owner_key not in earliest_twin_by_owner or created_at_utc < earliest_twin_by_owner[owner_key]:
+                earliest_twin_by_owner[owner_key] = created_at_utc
+
+        for user_id, user_created_at in new_user_created_at.items():
+            first_twin_at = earliest_twin_by_owner.get(user_id)
+            if first_twin_at is None:
+                continue
+            activation_deadline = user_created_at + timedelta(days=7)
+            if user_created_at <= first_twin_at < activation_deadline:
+                activated_new_users_7d += 1
+
+    feedback_count = helpful_count + thumb_down_count
+    total_tokens = total_prompt_tokens + total_response_tokens
+    estimated_spend_usd = (
+        (total_prompt_tokens / 1000.0) * PRICING_CONFIG["input_price_per_1k_tokens"]
+        + (total_response_tokens / 1000.0) * PRICING_CONFIG["output_price_per_1k_tokens"]
+    )
+
+    return {
+        "active_users": float(len(active_user_ids)),
+        "total_registered_users": float(total_registered_users),
+        "active_rate_pct": _rate_pct(float(len(active_user_ids)), float(total_registered_users)),
+        "new_registered_users": float(new_registered_users),
+        "activated_new_users_7d": float(activated_new_users_7d),
+        "new_user_activation_rate_7d_pct": _rate_pct(float(activated_new_users_7d), float(new_registered_users)),
+        "colleague_interactions": float(colleague_interactions),
+        "colleague_usage_share_pct": _rate_pct(float(colleague_interactions), float(total_interactions)),
+        "helpful_count": float(helpful_count),
+        "thumb_down_count": float(thumb_down_count),
+        "feedback_count": float(feedback_count),
+        "helpful_rate_pct": _rate_pct(float(helpful_count), float(feedback_count)),
+        "thumb_down_rate_pct_feedback": _rate_pct(float(thumb_down_count), float(feedback_count)),
+        "feedback_coverage_pct": round((feedback_count / total_interactions) * 100, 1) if total_interactions else 0.0,
+        "estimated_spend_usd": float(round(estimated_spend_usd, 4)),
+        "total_tokens": float(total_tokens),
+    }
+
+
+def compute_kpis(session: Session, start_at: datetime, end_at: datetime) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
     metrics.update(_interaction_metrics(session, start_at, end_at))
     metrics.update(_twin_metrics(session, start_at, end_at))
+    metrics.update(_overview_business_metrics(session, start_at, end_at))
     return metrics
 
 
-def _build_kpi_delta(current: Dict[str, float], previous: Dict[str, float]) -> Dict[str, Dict[str, Optional[float]]]:
+def _build_kpi_delta(current: Dict[str, Any], previous: Dict[str, Any]) -> Dict[str, Dict[str, Optional[float]]]:
     numeric_kpis = [
         "total_interactions",
         "active_twins",
@@ -285,6 +395,15 @@ def _build_kpi_delta(current: Dict[str, float], previous: Dict[str, float]) -> D
         "total_twins",
         "public_twins",
         "private_twins",
+        "active_users",
+        "total_registered_users",
+        "new_registered_users",
+        "activated_new_users_7d",
+        "colleague_interactions",
+        "helpful_count",
+        "thumb_down_count",
+        "feedback_count",
+        "estimated_spend_usd",
     ]
 
     delta_payload: Dict[str, Dict[str, Optional[float]]] = {}
@@ -295,12 +414,22 @@ def _build_kpi_delta(current: Dict[str, float], previous: Dict[str, float]) -> D
             "delta_pct": _delta_pct(current[key], previous[key]),
         }
 
-    ratio_key = "public_twin_ratio_pct"
-    delta_payload[ratio_key] = {
-        "current": current[ratio_key],
-        "previous": previous[ratio_key],
-        "delta_pp": _delta_pp(current[ratio_key], previous[ratio_key]),
-    }
+    ratio_kpis = [
+        "public_twin_ratio_pct",
+        "active_rate_pct",
+        "new_user_activation_rate_7d_pct",
+        "colleague_usage_share_pct",
+        "helpful_rate_pct",
+        "thumb_down_rate_pct_feedback",
+        "feedback_coverage_pct",
+    ]
+
+    for key in ratio_kpis:
+        delta_payload[key] = {
+            "current": current[key],
+            "previous": previous[key],
+            "delta_pp": _delta_pp(current[key], previous[key]),
+        }
 
     return delta_payload
 
@@ -335,15 +464,51 @@ def _growth_snapshot(session: Session, start_at: datetime, end_at: datetime) -> 
         )
     ).one()
 
+    new_user_rows = session.exec(
+        select(User.id, User.created_at).where(User.created_at >= start_at, User.created_at < end_at)
+    ).all()
+    new_registered_users = len(new_user_rows)
+    activated_new_users_7d = 0
+
+    if new_user_rows:
+        new_user_created_at = {
+            str(user_id): _ensure_aware_utc(created_at) for user_id, created_at in new_user_rows
+        }
+        new_user_ids = list(new_user_created_at.keys())
+        twin_rows = session.exec(
+            select(Twin.owner_id, Twin.created_at)
+            .where(Twin.owner_id.in_(new_user_ids))
+            .where(Twin.created_at < end_at)
+        ).all()
+
+        earliest_twin_by_owner: Dict[str, datetime] = {}
+        for owner_id, created_at in twin_rows:
+            owner_key = str(owner_id)
+            created_at_utc = _ensure_aware_utc(created_at)
+            if owner_key not in earliest_twin_by_owner or created_at_utc < earliest_twin_by_owner[owner_key]:
+                earliest_twin_by_owner[owner_key] = created_at_utc
+
+        for user_id, user_created_at in new_user_created_at.items():
+            first_twin_at = earliest_twin_by_owner.get(user_id)
+            if first_twin_at is None:
+                continue
+            activation_deadline = user_created_at + timedelta(days=7)
+            if user_created_at <= first_twin_at < activation_deadline:
+                activated_new_users_7d += 1
+
     twin_creation_rate = _rate_pct(float(users_with_twin), float(registered_users))
+    new_user_activation_rate_7d = _rate_pct(float(activated_new_users_7d), float(new_registered_users))
     public_twin_rate = _rate_pct(float(public_twins), float(created_twins))
 
     return {
         "registered_users": float(registered_users),
         "users_with_twin": float(users_with_twin),
+        "new_registered_users": float(new_registered_users),
+        "activated_new_users_7d": float(activated_new_users_7d),
         "created_twins": float(created_twins),
         "public_twins": float(public_twins),
         "twin_creation_rate": twin_creation_rate,
+        "new_user_activation_rate_7d": new_user_activation_rate_7d,
         "public_twin_rate": public_twin_rate,
     }
 
@@ -351,7 +516,14 @@ def _growth_snapshot(session: Session, start_at: datetime, end_at: datetime) -> 
 def _growth_summary(current: Dict[str, Optional[float]], previous: Dict[str, Optional[float]]) -> Dict[str, Dict[str, Optional[float]]]:
     summary: Dict[str, Dict[str, Optional[float]]] = {}
 
-    for key in ["registered_users", "users_with_twin", "created_twins", "public_twins"]:
+    for key in [
+        "registered_users",
+        "users_with_twin",
+        "new_registered_users",
+        "activated_new_users_7d",
+        "created_twins",
+        "public_twins",
+    ]:
         current_val = current[key] or 0.0
         previous_val = previous[key] or 0.0
         summary[key] = {
@@ -360,7 +532,7 @@ def _growth_summary(current: Dict[str, Optional[float]], previous: Dict[str, Opt
             "delta_pct": _delta_pct(current_val, previous_val),
         }
 
-    for key in ["twin_creation_rate", "public_twin_rate"]:
+    for key in ["twin_creation_rate", "new_user_activation_rate_7d", "public_twin_rate"]:
         current_val = current[key]
         previous_val = previous[key]
         summary[key] = {
@@ -973,6 +1145,25 @@ def get_kpi_metrics(
         "public_twins": int(current_metrics["public_twins"]),
         "private_twins": int(current_metrics["private_twins"]),
         "public_twin_ratio_pct": round(current_metrics["public_twin_ratio_pct"], 1),
+        "active_users": int(current_metrics["active_users"]),
+        "total_registered_users": int(current_metrics["total_registered_users"]),
+        "active_rate_pct": _round_optional(current_metrics["active_rate_pct"], 1),
+        "new_registered_users": int(current_metrics["new_registered_users"]),
+        "activated_new_users_7d": int(current_metrics["activated_new_users_7d"]),
+        "new_user_activation_rate_7d_pct": _round_optional(
+            current_metrics["new_user_activation_rate_7d_pct"], 1
+        ),
+        "colleague_interactions": int(current_metrics["colleague_interactions"]),
+        "colleague_usage_share_pct": _round_optional(current_metrics["colleague_usage_share_pct"], 1),
+        "helpful_count": int(current_metrics["helpful_count"]),
+        "thumb_down_count": int(current_metrics["thumb_down_count"]),
+        "feedback_count": int(current_metrics["feedback_count"]),
+        "helpful_rate_pct": _round_optional(current_metrics["helpful_rate_pct"], 1),
+        "thumb_down_rate_pct_feedback": _round_optional(
+            current_metrics["thumb_down_rate_pct_feedback"], 1
+        ),
+        "feedback_coverage_pct": _round_optional(current_metrics["feedback_coverage_pct"], 1),
+        "estimated_spend_usd": round(current_metrics["estimated_spend_usd"], 4),
         "period": _serialize_period(
             period["preset"], period["current"]["start"], period["current"]["end"]
         ),
