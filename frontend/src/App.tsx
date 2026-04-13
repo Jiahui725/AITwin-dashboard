@@ -34,6 +34,7 @@ const PRESET_OPTIONS = [
 
 type DashboardView = (typeof VIEW_OPTIONS)[number]['id'];
 type PeriodPreset = (typeof PRESET_OPTIONS)[number]['value'];
+type GrowthSeriesMode = 'absolute' | 'net_new';
 const DIAGNOSTIC_CATEGORIES = ['Hallucination', 'OutdatedInfo', 'Tone', 'InstructionsUnfollowed'] as const;
 
 type CacheStore = {
@@ -91,6 +92,7 @@ export default function App() {
   const [preset, setPreset] = useState<PeriodPreset>('this_month');
   const [view, setView] = useState<DashboardView>(() => parseViewFromUrl());
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [growthSeriesMode, setGrowthSeriesMode] = useState<GrowthSeriesMode>('absolute');
   const [qualitySelectedDepartment, setQualitySelectedDepartment] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -311,6 +313,25 @@ export default function App() {
     if (!top || top[1] <= 0) return null;
     return { category: top[0], count: top[1] };
   }, [qualityOverview]);
+
+  const growthChartConfig = useMemo(() => {
+    if (growthSeriesMode === 'absolute') {
+      return {
+        title: 'Installed Base (Weekly)',
+        subtitle: 'As of each week end (absolute totals).',
+        registeredKey: 'registered_users_total_as_of_bucket_end',
+        createdKey: 'created_twins_total_as_of_bucket_end',
+        publicKey: 'public_twins_total_as_of_bucket_end',
+      };
+    }
+    return {
+      title: 'Net New in Selected Period (Weekly)',
+      subtitle: 'Newly added within each weekly bucket.',
+      registeredKey: 'registered_users_net_new',
+      createdKey: 'created_twins_net_new',
+      publicKey: 'public_twins_net_new',
+    };
+  }, [growthSeriesMode]);
 
   const title = VIEW_OPTIONS.find((v) => v.id === view)?.label ?? 'Overview';
 
@@ -571,7 +592,50 @@ export default function App() {
                     <p className="text-xs text-slate-500 mt-1">Δ {formatDeltaCompact(growth.summary.public_twin_rate.delta_pp ?? null, 'pp')}</p>
                   </div>
                 </div>
-                <div className="bg-white p-6 rounded-xl border border-slate-100"><h3 className="text-lg font-semibold mb-6">Cumulative Growth (Weekly)</h3><div className="h-96"><ResponsiveContainer width="100%" height="100%"><LineChart data={growth.series}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="bucket_start" tickFormatter={formatBucketLabel} /><YAxis /><RechartsTooltip /><Legend /><Line dataKey="registered_users_cum" stroke="#1d4ed8" dot={false} /><Line dataKey="created_twins_cum" stroke="#059669" dot={false} /><Line dataKey="public_twins_cum" stroke="#f59e0b" dot={false} /></LineChart></ResponsiveContainer></div></div>
+                <div className="bg-white p-6 rounded-xl border border-slate-100">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold">{growthChartConfig.title}</h3>
+                      <p className="text-sm text-slate-500 mt-1">{growthChartConfig.subtitle}</p>
+                    </div>
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+                      <button
+                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${growthSeriesMode === 'absolute' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        onClick={() => setGrowthSeriesMode('absolute')}
+                      >
+                        Absolute Installed Base
+                      </button>
+                      <button
+                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${growthSeriesMode === 'net_new' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        onClick={() => setGrowthSeriesMode('net_new')}
+                      >
+                        Net New in Period
+                      </button>
+                    </div>
+                  </div>
+                  <div className="h-96 mt-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={growth.series}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="bucket_start" tickFormatter={formatBucketLabel} />
+                        <YAxis />
+                        <RechartsTooltip
+                          labelFormatter={(label: any, payload: any) => {
+                            const point = Array.isArray(payload) && payload.length > 0 ? payload[0].payload : null;
+                            if (growthSeriesMode === 'absolute' && point?.bucket_end) {
+                              return `As of ${formatBucketLabel(String(point.bucket_end))}`;
+                            }
+                            return `Week of ${formatBucketLabel(String(label))}`;
+                          }}
+                        />
+                        <Legend />
+                        <Line dataKey={growthChartConfig.registeredKey} name="Registered Users" stroke="#1d4ed8" dot={false} />
+                        <Line dataKey={growthChartConfig.createdKey} name="Created Twins" stroke="#059669" dot={false} />
+                        <Line dataKey={growthChartConfig.publicKey} name="Public Twins" stroke="#f59e0b" dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
               </section>
             )}
 

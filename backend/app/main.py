@@ -551,6 +551,16 @@ def _growth_cumulative_series(session: Session, start_at: datetime, end_at: date
     created_by_bucket = [0] * len(buckets)
     public_by_bucket = [0] * len(buckets)
 
+    registered_before_period = session.exec(
+        select(func.count(User.id)).where(User.created_at < start_at)
+    ).one()
+    created_twins_before_period = session.exec(
+        select(func.count(Twin.id)).where(Twin.created_at < start_at)
+    ).one()
+    public_twins_before_period = session.exec(
+        select(func.count(Twin.id)).where(Twin.created_at < start_at, Twin.visibility == "team")
+    ).one()
+
     users = session.exec(
         select(User.created_at).where(User.created_at >= start_at, User.created_at < end_at)
     ).all()
@@ -583,6 +593,12 @@ def _growth_cumulative_series(session: Session, start_at: datetime, end_at: date
             {
                 "bucket_start": bucket["start_local"].isoformat(),
                 "bucket_end": bucket["end_local"].isoformat(),
+                "registered_users_net_new": registered_by_bucket[idx],
+                "created_twins_net_new": created_by_bucket[idx],
+                "public_twins_net_new": public_by_bucket[idx],
+                "registered_users_total_as_of_bucket_end": int(registered_before_period + reg_cum),
+                "created_twins_total_as_of_bucket_end": int(created_twins_before_period + twin_cum),
+                "public_twins_total_as_of_bucket_end": int(public_twins_before_period + pub_cum),
                 "registered_users_cum": reg_cum,
                 "created_twins_cum": twin_cum,
                 "public_twins_cum": pub_cum,

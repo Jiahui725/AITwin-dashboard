@@ -26,7 +26,7 @@ Open a terminal to initialize the database and start the API:
 cd backend
 
 # If the API server is already running, stop `uvicorn --reload` first to avoid SQLite file lock errors.
-# Full reseed: Resets ai_twin.db, recreates tables, and seeds 30 days of mock data
+# Full reseed: Resets ai_twin.db, recreates tables, and seeds 60 days of mock data
 uv run seed.py
 
 # Start the FastAPI server
@@ -130,7 +130,7 @@ erDiagram
 
 ### 4.3. Seed & Simulation Semantics
 The `seed.py` utility generates demo data with realistic business patterns:
-* **Network Effects:** Colleague-call probability for `team` twins grows linearly from **30% to 50%** over the 30-day window to simulate organic adoption.
+* **Network Effects:** Colleague-call probability for `team` twins grows linearly from **30% to 50%** over the 60-day window to simulate organic adoption.
 * **Cost Realism:** Interaction generation uses an **exponential distribution** to simulate "Whale" users. Processing latency is tied to response length (`300ms + response_len * 1.5`).
 * **Diagnostic Integrity:** Every `thumb-down` triggers exactly one `InteractionDiagnostic` with 1-2 unique tags (e.g., `Hallucination`, `OutdatedInfo`, `Tone`, `InstructionsUnfollowed`).
 * **Data Consistency Guards:** Seeding enforces temporal consistency so interactions cannot be generated earlier than the corresponding user registration or twin creation time.
