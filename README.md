@@ -25,6 +25,7 @@ Open a terminal to initialize the database and start the API:
 ```bash
 cd backend
 
+# If the API server is already running, stop `uvicorn --reload` first to avoid SQLite file lock errors.
 # Full reseed: Resets ai_twin.db, recreates tables, and seeds 30 days of mock data
 uv run seed.py
 
@@ -132,6 +133,7 @@ The `seed.py` utility generates demo data with realistic business patterns:
 * **Network Effects:** Colleague-call probability for `team` twins grows linearly from **30% to 50%** over the 30-day window to simulate organic adoption.
 * **Cost Realism:** Interaction generation uses an **exponential distribution** to simulate "Whale" users. Processing latency is tied to response length (`300ms + response_len * 1.5`).
 * **Diagnostic Integrity:** Every `thumb-down` triggers exactly one `InteractionDiagnostic` with 1-2 unique tags (e.g., `Hallucination`, `OutdatedInfo`, `Tone`, `InstructionsUnfollowed`).
+* **Data Consistency Guards:** Seeding enforces temporal consistency so interactions cannot be generated earlier than the corresponding user registration or twin creation time.
 
 ### 4.4. KPI Formula Contracts
 | Metric | Formula | Zero-denominator Behavior |
@@ -144,7 +146,9 @@ The `seed.py` utility generates demo data with realistic business patterns:
 | `Helpful Rate (feedback-only)` | `Helpful / (Helpful + Thumb Down) * 100` | `null` if `(Helpful + Thumb Down) = 0` |
 | `Thumb-down Rate (feedback-only)` | `Thumb Down / (Helpful + Thumb Down) * 100` | `null` if `(Helpful + Thumb Down) = 0` |
 | `Feedback Coverage` | `(Helpful + Thumb Down) / Total Interactions * 100` | `0.0` if `Total Interactions = 0` |
-| `Estimated Spend (USD)` | `Token Proxy Pricing(Input + Output)` | `0.0` when total tokens are `0` |
+| `Estimated Spend (USD)` | `(Prompt Tokens / 1k * Input Price) + (Response Tokens / 1k * Output Price)` | `0.0` when total tokens are `0` |
+
+`Active Users` only counts users with valid activity semantics (registration timestamp is not later than interaction timestamp).
 
 ---
 
